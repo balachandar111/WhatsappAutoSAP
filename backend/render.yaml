@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: was-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 20
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: SUPERADMIN_USERNAME
+        value: superadmin
+      - key: SUPERADMIN_PASSWORD
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false   # your Vercel URL, e.g. https://was.vercel.app
+      - key: PUBLIC_URL
+        sync: false   # your Render URL, e.g. https://was-backend.onrender.com

@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../../../context/AuthContext';
-import { uploadImage } from '../../../api/client';
-import { FIELD_TYPES, WA, choiceKind, slugifyKey, titleLimit } from './flowUtils';
+import { api, uploadImage } from '../../../api/client';
+import { FIELD_TYPES, SHOP_LIMITS, WA, choiceKind, slugifyKey, titleLimit } from './flowUtils';
 
 /* ---------------------------- small shared bits ---------------------------- */
 function ImagePicker({ value, onChange, emptyLabel = 'No image' }) {
@@ -261,6 +261,215 @@ export function FormEditor({ node, keys, onChange }) {
           <NextSelect value={node.formNext} onChange={(v) => onChange({ formNext: v })} keys={keys} none="— end conversation (thank-you) —" />
         </label>
       </div>
+    </>
+  );
+}
+
+/* ============================================================================
+   SHOP nodes — they run on the admin's LIVE Product / Category / Branch pages
+   ============================================================================ */
+
+// Categories + products + outlets of this admin (shared by every shop editor; cached for 20 s)
+let shopCache = null;
+const loadShopData = () => {
+  if (shopCache && Date.now() - shopCache.at < 20000) return shopCache.p;
+  const p = Promise.all([api('/categories'), api('/products'), api('/branches')]).then(([c, pr, b]) => ({ cats: c.data, prods: pr.data, branches: b.data }));
+  shopCache = { at: Date.now(), p };
+  p.catch(() => { shopCache = null; });
+  return p;
+};
+function useShopData() {
+  const [d, setD] = useState({ loading: true, cats: [], prods: [], branches: [], err: '' });
+  useEffect(() => {
+    let on = true;
+    loadShopData().then((r) => on && setD({ loading: false, ...r, err: '' })).catch((e) => on && setD((x) => ({ ...x, loading: false, err: e.message })));
+    return () => { on = false; };
+  }, []);
+  return d;
+}
+
+const Explain = ({ children }) => <p className="helper-text" style={{ marginBottom: 10 }}>{children}</p>;
+
+/* ------------------------------ SHOP node ------------------------------ */
+export function ShopEditor({ node, keys, onChange }) {
+  const { loading, cats, prods, err } = useShopData();
+  const xs = node.shopExtras || [];
+  const selCats = node.shopCategories || [];
+  const selProds = node.shopProducts || [];
+  const [showProds, setShowProds] = useState(selProds.length > 0);
+  const setX = (i, patch) => onChange({ shopExtras: xs.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+  const activeCats = cats.filter((c) => c.active);
+  const shown = selCats.length ? activeCats.filter((c) => selCats.includes(c.key)) : activeCats;
+  const rowsUsed = shown.length + xs.length;                    // + 1 more when the customer already has a cart
+  const toggle = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
+
+  return (
+    <>
+      <Explain>
+        Customers get: <b>menu → category → product → size → quantity → cart</b>. Categories, products, sizes, prices and stock are read <b>live</b> from your
+        <b> Product section</b> — change a product there and the chat changes with it. Use <code>{'{shop}'}</code> in the welcome message for your shop name.
+      </Explain>
+      {err && <div className="error-text">Could not load your products: {err}</div>}
+
+      <h4>Categories shown in the menu</h4>
+      <div className="stack" style={{ gap: 6, marginBottom: 10 }}>
+        <label className="check" style={{ margin: 0 }}><input type="radio" checked={selCats.length === 0} onChange={() => onChange({ shopCategories: [], shopProducts: [] })} />
+          All active categories {!loading && <span className="muted">({activeCats.length} now: {activeCats.map((c) => c.label).join(', ') || '—'})</span>}</label>
+        <label className="check" style={{ margin: 0 }}><input type="radio" checked={selCats.length > 0} onChange={() => activeCats[0] && onChange({ shopCategories: [activeCats[0].key] })} disabled={!activeCats.length} />Only the categories I tick</label>
+      </div>
+      {selCats.length > 0 && (
+        <div className="sub-card">
+          {cats.map((c) => (
+            <label key={c.key} className="check" style={{ margin: '2px 0' }}>
+              <input type="checkbox" checked={selCats.includes(c.key)} onChange={() => { const next = toggle(selCats, c.key); onChange({ shopCategories: next, shopProducts: selProds.filter((code) => prods.find((p) => p.code === code && next.includes(p.category))) }); }} />
+              {c.emoji} {c.label} <span className="muted">· {c.products} product{c.products === 1 ? '' : 's'}{!c.active ? ' · inactive' : ''}</span>
+            </label>
+          ))}
+        </div>
+      )}
+      {!loading && !err && cats.length === 0 && <div className="warn">You have no categories yet. Add categories and products in the Product section first.</div>}
+
+      <div style={{ margin: '4px 0 10px' }}>
+        <button type="button" className="btn ghost small" onClick={() => setShowProds((v) => !v)}>{showProds ? '▾' : '▸'} Limit to specific products (optional){selProds.length ? ` — ${selProds.length} chosen` : ''}</button>
+        {showProds && (
+          <div className="sub-card">
+            <p className="helper-text" style={{ marginBottom: 6 }}>Leave everything unticked to offer every available product of the chosen categories.</p>
+            {shown.map((c) => (
+              <div key={c.key} style={{ marginBottom: 6 }}>
+                <b style={{ fontSize: 12.5 }}>{c.emoji} {c.label}</b>
+                {prods.filter((p) => p.category === c.key).map((p) => (
+                  <label key={p.code} className="check" style={{ margin: '1px 0 1px 12px' }}>
+                    <input type="checkbox" checked={selProds.includes(p.code)} onChange={() => onChange({ shopProducts: toggle(selProds, p.code) })} />
+                    {p.name} <span className="muted">· {p.code}{p.available ? '' : ' · switched off'}</span>
+                  </label>
+                ))}
+              </div>
+            ))}
+            {selProds.length > 0 && <button type="button" className="btn ghost small" onClick={() => onChange({ shopProducts: [] })}>Clear selection</button>}
+          </div>
+        )}
+      </div>
+
+      <h4>Extra menu rows (after the categories)</h4>
+      <Explain>Rows that lead to other nodes — e.g. Bulk &amp; Gifting, Track my order, Our outlets. WhatsApp lists hold {SHOP_LIMITS.ROWS_MAX} rows in total; the customer's “My cart” row is added on top when they have items.</Explain>
+      {xs.map((x, i) => (
+        <div className="sub-card" key={i}>
+          <div className="field-row">
+            <input style={{ flex: '1 1 170px' }} value={x.text} onChange={(e) => setX(i, { text: e.target.value })} placeholder="Row title, e.g. 🎁 Bulk & Gifting" />
+            <div style={{ flex: '0 0 170px' }}><NextSelect value={x.next} onChange={(v) => setX(i, { next: v })} keys={keys} none="— choose a node —" /></div>
+            <button type="button" className="btn ghost small" onClick={() => onChange({ shopExtras: xs.filter((_, j) => j !== i) })} aria-label="Remove row">✕</button>
+          </div>
+          <input style={{ marginTop: 6, fontSize: 12.5 }} value={x.description || ''} onChange={(e) => setX(i, { description: e.target.value })} placeholder="Small description under the title (optional)" />
+          <Counter text={x.text} max={WA.LIST_TITLE} />
+        </div>
+      ))}
+      <button type="button" className="btn outline small" onClick={() => onChange({ shopExtras: [...xs, { text: '', description: '', next: '' }] })} disabled={xs.length >= SHOP_LIMITS.EXTRAS_MAX}>+ Add menu row</button>
+      {!loading && rowsUsed >= SHOP_LIMITS.ROWS_MAX && <div className="warn" style={{ marginTop: 8 }}>{shown.length} categories + {xs.length} extra rows fill the {SHOP_LIMITS.ROWS_MAX}-row WhatsApp list. Extra rows are always kept; some categories will be hidden — tick fewer categories above.</div>}
+
+      <label style={{ marginTop: 14 }}>When the customer taps “🧾 Checkout”, continue to
+        <NextSelect value={node.checkoutNext} onChange={(v) => onChange({ checkoutNext: v })} keys={keys} none="— choose a node (usually the Checkout node) —" />
+      </label>
+    </>
+  );
+}
+
+/* ------------------------------ CHECKOUT node ------------------------------ */
+export function CheckoutEditor({ node, onChange }) {
+  const { branches, loading } = useShopData();
+  const live = branches.filter((b) => b.active);
+  return (
+    <>
+      <Explain>
+        Runs the order steps: <b>name → delivery / pickup → location pin → nearest outlet that has every item in stock → address</b> (or <b>outlet → pickup time</b>) →
+        <b> order summary → Razorpay payment link</b>. When the customer pays, the order appears in Orders and they get the confirmation here.
+        Delivery fee, free-delivery amount and delivery radius come from <b>Setup</b>; outlets from <b>Outlets</b>.
+      </Explain>
+      <div className="stack" style={{ gap: 6 }}>
+        <label className="check" style={{ margin: 0 }}><input type="checkbox" checked={node.allowDelivery !== false} onChange={(e) => onChange({ allowDelivery: e.target.checked })} />🚚 Offer home delivery</label>
+        <label className="check" style={{ margin: 0 }}><input type="checkbox" checked={node.allowPickup !== false} onChange={(e) => onChange({ allowPickup: e.target.checked })} />🏬 Offer self pickup</label>
+        <label className="check" style={{ margin: 0 }}><input type="checkbox" checked={node.askName !== false} onChange={(e) => onChange({ askName: e.target.checked })} />Ask for the customer's name <span className="muted">(off = use their WhatsApp profile name)</span></label>
+      </div>
+      {node.allowDelivery === false && node.allowPickup === false && <div className="error-text">Allow at least one of delivery or pickup.</div>}
+      {node.allowDelivery !== false && node.allowPickup !== false && <p className="helper-text" style={{ margin: '6px 0 0' }}>With both on, the customer chooses; with one on, that question is skipped.</p>}
+      <div className="field-row" style={{ marginTop: 12, alignItems: 'flex-start' }}>
+        <label style={{ flex: 1, minWidth: 220 }}>Name question (optional)
+          <input value={node.namePrompt || ''} onChange={(e) => onChange({ namePrompt: e.target.value })} placeholder="Please enter your *full name*:" />
+        </label>
+        <label style={{ flex: 1, minWidth: 220 }}>Address question (optional)
+          <input value={node.addressPrompt || ''} onChange={(e) => onChange({ addressPrompt: e.target.value })} placeholder="Now send your *full delivery address with landmark & pincode*:" />
+        </label>
+      </div>
+      {!loading && live.length === 0 && <div className="warn">You have no active outlets. Add at least one in Outlets — orders are routed to an outlet.</div>}
+      {!loading && live.length > 0 && <p className="helper-text" style={{ marginTop: 6 }}>Active outlets: {live.map((b) => b.name).join(', ')}</p>}
+    </>
+  );
+}
+
+/* ------------------------------ BULK node ------------------------------ */
+export function BulkEditor({ node, keys, onChange }) {
+  const os = node.bulkOccasions || [];
+  const setO = (i, patch) => onChange({ bulkOccasions: os.map((o, j) => {
+    if (j !== i) return o;
+    const u = { ...o, ...patch };
+    if (patch.label !== undefined) u.key = slugifyKey(patch.label.replace(/[^\p{L}\p{N} ]/gu, ''), os.filter((_, k) => k !== i).map((x) => x.key)).replace(/_/g, '-').slice(0, 30);
+    return u;
+  }) });
+  return (
+    <>
+      <Explain>Asks: <b>occasion → what do you need → needed by</b>, saves it under <b>Bulk enquiries</b> and alerts the owner's WhatsApp number (Setup).</Explain>
+      <h4>Occasions (list rows)</h4>
+      {os.map((o, i) => (
+        <div className="sub-card" key={i}>
+          <div className="field-row">
+            <div style={{ flex: '1 1 200px' }}><input value={o.label} onChange={(e) => setO(i, { label: e.target.value })} placeholder="e.g. 💍 Wedding" /><Counter text={o.label} max={WA.LIST_TITLE} /></div>
+            <span className="muted mono">saved as: {o.key}</span>
+            <button type="button" className="btn ghost small" onClick={() => onChange({ bulkOccasions: os.filter((_, j) => j !== i) })} aria-label="Remove occasion">✕</button>
+          </div>
+        </div>
+      ))}
+      <button type="button" className="btn outline small" style={{ marginBottom: 12 }} disabled={os.length >= SHOP_LIMITS.OCCASIONS_MAX}
+        onClick={() => onChange({ bulkOccasions: [...os, { key: slugifyKey('occasion', os.map((x) => x.key)).replace(/_/g, '-'), label: '' }] })}>+ Add occasion</button>
+      <div className="field-row" style={{ alignItems: 'flex-start' }}>
+        <label style={{ flex: 1, minWidth: 220 }}>“What do you need?” question (optional)
+          <input value={node.bulkDetailsPrompt || ''} onChange={(e) => onChange({ bulkDetailsPrompt: e.target.value })} placeholder="Please tell us *what you need* — items, quantity and budget:" />
+        </label>
+        <label style={{ flex: 1, minWidth: 220 }}>“When do you need it?” question (optional)
+          <input value={node.bulkDatePrompt || ''} onChange={(e) => onChange({ bulkDatePrompt: e.target.value })} placeholder='When do you need it? (date & time, e.g. "25 Oct evening")' />
+        </label>
+      </div>
+      <label>Thank-you message (optional — use {'{id}'} for the enquiry number and {'{name}'})
+        <textarea rows={2} value={node.bulkSuccessText || ''} onChange={(e) => onChange({ bulkSuccessText: e.target.value })} placeholder="🎁 Thank you! Your bulk enquiry *{id}* is received. Our team will contact you shortly." />
+      </label>
+      <label>After the enquiry is saved, continue to (optional)
+        <NextSelect value={node.bulkNext} onChange={(v) => onChange({ bulkNext: v })} keys={keys} none="— end conversation —" />
+      </label>
+    </>
+  );
+}
+
+/* ------------------------------ TRACK node ------------------------------ */
+export function TrackEditor({ node, keys, onChange }) {
+  return (
+    <>
+      <Explain>Sends the status of this customer's latest order (matched by their WhatsApp number): confirmed / packed / ready for pickup / out for delivery (with rider details) / delivered, or the pending payment link.</Explain>
+      <label>After the status, continue to (optional)
+        <NextSelect value={node.trackNext} onChange={(v) => onChange({ trackNext: v })} keys={keys} none="— stay where the customer was (cart is kept) —" />
+      </label>
+    </>
+  );
+}
+
+/* ------------------------------ OUTLETS node ------------------------------ */
+export function OutletsEditor({ node, keys, onChange }) {
+  const { branches, loading } = useShopData();
+  const live = branches.filter((b) => b.active);
+  return (
+    <>
+      <Explain>Sends your active outlets from the <b>Outlets</b> page — name, address, phone and opening hours{!loading && live.length ? ` (${live.length} active now)` : ''}.</Explain>
+      <label className="check"><input type="checkbox" checked={node.outletsMaps !== false} onChange={(e) => onChange({ outletsMaps: e.target.checked })} />Also send a map pin for the first 3 outlets</label>
+      <label>After the outlets, continue to (optional)
+        <NextSelect value={node.outletsNext} onChange={(v) => onChange({ outletsNext: v })} keys={keys} none="— stay where the customer was (cart is kept) —" />
+      </label>
     </>
   );
 }

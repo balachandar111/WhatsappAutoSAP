@@ -25,6 +25,7 @@ chatflows.put('/:id', chatflow.update);
 chatflows.put('/:id/flow', chatflow.saveFlow);
 chatflows.post('/:id/validate', chatflow.validate);
 chatflows.post('/:id/duplicate', chatflow.duplicate);
+chatflows.post('/:id/simulate', chatflow.simulate);
 chatflows.get('/:id/export-excel', chatflow.exportExcel);
 chatflows.post('/:id/import-excel', (req, res, next) => xls(req, res, (e) => (e ? next(Object.assign(e, { isUpload: true })) : next())), chatflow.importExcel);
 chatflows.delete('/:id', chatflow.remove);

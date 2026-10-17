@@ -12,6 +12,8 @@ const Session = require('../models/Session');
 const Admin = require('../models/Admin');
 const { featuresOf } = require('../middleware/features');
 const flowEngine = require('./flowEngine');
+const shopEngine = require('./shopEngine');
+const Branch = require('../models/Branch');
 const commerceBot = require('./commerceBot');
 const { makeClient, safe, recorder } = require('./whatsapp');
 const { parseInbound } = require('./inbound');
@@ -55,7 +57,7 @@ async function resetSession(adminId, phone, automation, profileName) {
 // Core: process one customer message for one tenant.
 //   opts.client      = unsafe WhatsApp client (real or recording)      opts.simulate = dry run (flow preview)
 //   opts.automationId = force an automation (simulator)
-async function run({ cfg, phone, input, profileName, client, simulate = false, automationId = null }) {
+async function run({ cfg, phone, input, profileName, client, simulate = false, automationId = null, previewAutomation = null }) {
   const adminId = cfg.adminId;
   const W = safe(client);
   const owner = await Admin.findById(adminId).select('adminType');
@@ -64,7 +66,7 @@ async function run({ cfg, phone, input, profileName, client, simulate = false, a
   if (!canSell) automations = automations.filter((a) => a.type !== 'commerce');      // downgraded admins: ordering bot is off
   // the simulator can preview an automation that is not switched on yet
   if (simulate && automationId && !automations.some((a) => String(a._id) === String(automationId))) {
-    const preview = await Automation.findOne({ _id: automationId, admin: adminId });
+    const preview = previewAutomation || await Automation.findOne({ _id: automationId, admin: adminId });
     if (preview) automations.push(preview);
   }
   const byId = new Map(automations.map((a) => [String(a._id), a]));
@@ -103,6 +105,7 @@ async function run({ cfg, phone, input, profileName, client, simulate = false, a
     if (automation.type === 'flow') {
       const flowDoc = await Chatflow.findOne({ _id: automation.chatflow, admin: adminId });
       if (!flowDoc || !flowDoc.liveFlow || !Object.keys(flowDoc.liveFlow).length) return null;
+      if (!canSell && shopEngine.flowUsesCommerce(flowDoc.liveFlow)) return null;      // downgraded admin: shop nodes are off
       return { ...base, automation, flowDoc, flow: flowDoc.liveFlow };
     }
     return { ...base, automation };
@@ -152,9 +155,23 @@ async function simulate({ cfg, automation, userId, input, reset = false }) {
   if (reset) await Session.deleteOne({ admin: cfg.adminId, phone });
   const rec = recorder();
   const client = makeClient(cfg, rec.transport);
-  const result = await enqueue(`${cfg.adminId}:${phone}`, () => run({ cfg, phone, input, profileName: 'Simulator', client, simulate: true, automationId: automation._id }));
+  const result = await enqueue(`${cfg.adminId}:${phone}`, () => run({ cfg, phone, input, profileName: 'Simulator', client, simulate: true, automationId: automation._id, previewAutomation: automation.preview ? automation : null }));
   const s = await Session.findOne({ admin: cfg.adminId, phone });
   return { messages: rec.out, finished: !s, state: s ? { step: s.step, ...(s.flow || {}) } : null, handled: result.handled };
 }
 
-module.exports = { handleMessage, simulate, run, keywordMatch };
+// Turns a simulator request body into the flat inbound shape the engines read.
+//   { text } | { replyId, replyTitle } | { media } | { sampleLocation: true }  (a pin next to the admin's first active outlet)
+async function buildSimInput(adminId, b = {}) {
+  const input = { type: 'text', text: String(b.text || '').trim(), replyId: '', replyTitle: '', location: null, order: null, media: null };
+  if (b.replyId) { input.type = 'interactive'; input.replyId = String(b.replyId); input.replyTitle = String(b.replyTitle || ''); input.text = input.replyTitle; }
+  if (b.media) { input.type = 'image'; input.media = { id: 'sim-media', mime: 'image/jpeg', filename: 'photo.jpg', caption: '', kind: 'image' }; }
+  if (b.sampleLocation) {
+    const br = await Branch.findOne({ admin: adminId, active: true }).sort({ name: 1 });
+    input.type = 'location'; input.text = '';
+    input.location = br ? { latitude: br.lat + 0.004, longitude: br.lng + 0.004 } : { latitude: 13.0827, longitude: 80.2707 };
+  }
+  return input;
+}
+
+module.exports = { handleMessage, simulate, run, keywordMatch, buildSimInput };

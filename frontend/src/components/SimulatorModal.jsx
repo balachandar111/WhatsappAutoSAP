@@ -4,7 +4,7 @@ import Modal from './Modal';
 
 // "Test on the server": runs the REAL conversation engine in dry-run mode (nothing is sent to WhatsApp,
 // no submissions are saved) and shows the exact WhatsApp payloads it would have sent.
-export default function SimulatorModal({ automation, onClose }) {
+export default function SimulatorModal({ automation, onClose, endpoint }) {
   const [msgs, setMsgs] = useState([]);       // { from:'bot'|'user'|'sys', ... }
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -27,7 +27,8 @@ export default function SimulatorModal({ automation, onClose }) {
       if (i.type === 'button') return { ...base, buttons: i.action.buttons.map((b) => ({ id: b.reply.id, title: b.reply.title })) };
       if (i.type === 'list') return { ...base, list: { button: i.action.button, rows: i.action.sections.flatMap((s) => s.rows) } };
       if (i.type === 'cta_url') return { ...base, link: i.action.parameters };
-      if (i.type === 'location_request_message') return { ...base, text: `${i.body?.text}\n\n📍 (the customer would be asked to share their location)` };
+      if (i.type === 'location_request_message') return { ...base, askLocation: true, text: `${i.body?.text}` };
+      if (i.type === 'product_list') return { ...base, text: `${i.body?.text}\n\n🛒 (WhatsApp catalog list: ${i.action.sections.flatMap((s) => s.product_items).map((x) => x.product_retailer_id).join(', ')})` };
     }
     return { ...m, text: `(${p.type} message)` };
   };
@@ -36,7 +37,7 @@ export default function SimulatorModal({ automation, onClose }) {
     setBusy(true); setSheet(null);
     if (userText) setMsgs((p) => [...p, { id: ++id.current, from: 'user', text: userText }]);
     try {
-      const r = await api(`/automations/${automation.id}/simulate`, { method: 'POST', body });
+      const r = await api(endpoint || `/automations/${automation.id}/simulate`, { method: 'POST', body });
       setMsgs((p) => [...p, ...(body.reset ? [] : []), ...r.data.messages.map(toMsg)]);
       setFinished(r.data.finished);
       if (r.data.finished) setMsgs((p) => [...p, { id: ++id.current, from: 'sys', text: 'Conversation ended' }]);
@@ -72,6 +73,7 @@ export default function SimulatorModal({ automation, onClose }) {
                     {m.text}
                   </div>
                 )}
+                {m.askLocation && <button className="wa-btn" disabled={busy} onClick={() => call({ sampleLocation: true }, '📍 (shared a location near your first outlet)')}>📍 Share sample location</button>}
                 {m.link && <a className="wa-btn" href={m.link.url} target="_blank" rel="noreferrer">🔗 {m.link.display_text}</a>}
                 {m.buttons?.map((b) => <button key={b.id} className="wa-btn" disabled={busy} onClick={() => pick(b)}>{b.title}</button>)}
                 {m.list && <button className="wa-btn" disabled={busy} onClick={() => setSheet(m.list)}>☰ {m.list.button}</button>}

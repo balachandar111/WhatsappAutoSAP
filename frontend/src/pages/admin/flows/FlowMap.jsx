@@ -21,6 +21,11 @@ const TYPE_META = {
   products: { icon: "🛒", label: "Products", color: "#2563eb", soft: "#e8f0fe" },
   steps: { icon: "📋", label: "Steps", color: "#c98a12", soft: "#fdf3dc" },
   form: { icon: "📝", label: "Form", color: "#7c3aed", soft: "#f1ebfe" },
+  shop: { icon: "🛍️", label: "Shop", color: "#d9480f", soft: "#fff0e6" },
+  checkout: { icon: "🧾", label: "Checkout", color: "#c2255c", soft: "#fde8f1" },
+  bulk: { icon: "🎁", label: "Bulk", color: "#0c8599", soft: "#e3f6f9" },
+  track: { icon: "📦", label: "Track", color: "#5f3dc4", soft: "#ede8fc" },
+  outlets: { icon: "📍", label: "Outlets", color: "#2b8a3e", soft: "#e6f6e9" },
 };
 
 const NODE_W = 216;
@@ -48,6 +53,15 @@ function nodeSummary(node) {
     const n = (node.formFields || []).length;
     return n ? `${n} field${n > 1 ? "s" : ""}` : "No fields yet";
   }
+  if (nodeType === "shop") {
+    const n = (node.shopExtras || []).length;
+    const c = (node.shopCategories || []).length;
+    return `${c ? `${c} categor${c > 1 ? "ies" : "y"}` : "All categories"} · ${n} extra row${n === 1 ? "" : "s"}`;
+  }
+  if (nodeType === "checkout") return [node.allowDelivery !== false && "Delivery", node.allowPickup !== false && "Pickup"].filter(Boolean).join(" + ") || "No fulfilment!";
+  if (nodeType === "bulk") return `${(node.bulkOccasions || []).length} occasions`;
+  if (nodeType === "track") return "Latest order status";
+  if (nodeType === "outlets") return "Outlet list + maps";
   return "";
 }
 
@@ -275,7 +289,7 @@ export default function FlowMap({ questions, start, onSelectNode, errorKeys = []
                       minHeight: 32,
                     }}
                   >
-                    {node.text || <em style={{ color: "#b3b6c7" }}>No text yet</em>}
+                    {node.text || (TYPE_META[nodeType]?.label && ["checkout", "track", "outlets"].includes(nodeType) ? <em style={{ color: "#8a8fa8" }}>Uses live shop data</em> : <em style={{ color: "#b3b6c7" }}>No text yet</em>)}
                   </div>
                   <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{nodeSummary(node)}</div>
                 </div>

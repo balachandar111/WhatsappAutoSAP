@@ -5,6 +5,7 @@ const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Branch = require('../models/Branch');
 const dispatcher = require('../services/dispatcher');
+const shopEngine = require('../services/shopEngine');
 const { bad, notFound, HttpError } = require('../utils/http');
 const { featuresOf } = require('../middleware/features');
 
@@ -46,7 +47,12 @@ async function warningsFor(req, a) {
     const clash = await Automation.find({ admin: req.admin._id, active: true, _id: { $ne: a._id }, 'trigger.keywords': { $in: a.trigger.keywords } }).select('name trigger.keywords');
     for (const c of clash) w.push(`Keyword clash with "${c.name}" (${c.trigger.keywords.filter((k) => a.trigger.keywords.includes(k)).join(', ')}). The one with the higher priority wins.`);
   }
-  if (a.type === 'commerce') {
+  let usesShop = a.type === 'commerce';
+  if (a.type === 'flow' && a.chatflow) {
+    const f = a._flow?.liveFlow ? a._flow : await Chatflow.findById(a.chatflow).select('liveFlow');
+    usesShop = shopEngine.flowUsesCommerce(f?.liveFlow);
+  }
+  if (usesShop) {
     const [prods, cats, branches] = await Promise.all([Product.countDocuments({ admin: req.admin._id, available: true }), Category.countDocuments({ admin: req.admin._id, active: true }), Branch.countDocuments({ admin: req.admin._id, active: true })]);
     if (!cats || !prods) w.push('Add categories and products first - the ordering menu is empty.');
     if (!branches) w.push('Add at least one branch - orders need an outlet to be routed to.');
@@ -161,9 +167,7 @@ exports.simulate = async (req, res) => {
   const a = await one(req);
   if (a.type !== 'flow') throw bad('Only chat-flow automations can be simulated');
   const b = req.body || {};
-  const input = { type: 'text', text: String(b.text || '').trim(), replyId: '', replyTitle: '', location: null, order: null, media: null };
-  if (b.replyId) { input.type = 'interactive'; input.replyId = String(b.replyId); input.replyTitle = String(b.replyTitle || ''); input.text = input.replyTitle; }
-  if (b.media) { input.type = 'image'; input.media = { id: 'sim-media', mime: 'image/jpeg', filename: 'photo.jpg', caption: '', kind: 'image' }; }
-  const out = await dispatcher.simulate({ cfg: req.cfg, automation: a, userId: String(req.admin._id), input, reset: !!b.reset || (!b.text && !b.replyId && !b.media) });
+  const input = await dispatcher.buildSimInput(req.admin._id, b);
+  const out = await dispatcher.simulate({ cfg: req.cfg, automation: a, userId: String(req.admin._id), input, reset: !!b.reset || (!b.text && !b.replyId && !b.media && !b.sampleLocation) });
   res.json({ success: true, data: out });
 };

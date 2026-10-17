@@ -7,7 +7,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node src/seed.js",
-    "test": "node --test test/e2e.test.js"
+    "test": "node --test test/e2e.test.js",
+    "test:shop": "node --test test/shop.flow.test.js"
   },
   "engines": {
     "node": ">=18"

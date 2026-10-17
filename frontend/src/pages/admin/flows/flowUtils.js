@@ -11,6 +11,12 @@
 |   form     -> { text, formFields: [{ key, label, fieldType, required, placeholder, options, showIf }],
 |                 formSubmitLabel, formNext }
 |
+| Shop nodes (need Ecommerce operations) read the admin's LIVE Product / Category / Branch pages - nothing is typed into the flow:
+|   shop     -> { text, shopCategories: [key], shopProducts: [code], shopExtras: [{ text, description, next }], checkoutNext }
+|   checkout -> { allowDelivery, allowPickup, askName, namePrompt, addressPrompt }
+|   bulk     -> { text, bulkOccasions: [{ key, label }], bulkDetailsPrompt, bulkDatePrompt, bulkSuccessText, bulkNext }
+|   track    -> { trackNext }          outlets -> { outletsMaps, outletsNext }
+|
 | How each node renders on WhatsApp (see WhatsAppPreview.jsx):
 |   message  -> text + up to 3 reply buttons, or a list menu (4–10 rows)
 |   products -> one image message per card (title, description, link in caption) + optional "Continue" button
@@ -30,10 +36,24 @@ export const langLabel = (l) => LANGS[l] || (l ? l.charAt(0).toUpperCase() + l.s
 
 export const NODE_TYPES = {
   message: { icon: '💬', label: 'Message / Options' },
-  products: { icon: '🛒', label: 'Product cards' },
+  products: { icon: '🖼️', label: 'Product cards (manual)' },
   steps: { icon: '📋', label: 'Instruction steps' },
   form: { icon: '📝', label: 'Form (questions)' },
+  shop: { icon: '🛍️', label: 'Shop menu (live products)', commerce: true },
+  checkout: { icon: '🧾', label: 'Checkout & payment', commerce: true },
+  bulk: { icon: '🎁', label: 'Bulk / gifting enquiry', commerce: true },
+  track: { icon: '📦', label: 'Track my order', commerce: true },
+  outlets: { icon: '📍', label: 'Our outlets', commerce: true },
 };
+export const COMMERCE_TYPES = Object.keys(NODE_TYPES).filter((k) => NODE_TYPES[k].commerce);
+export const isCommerceType = (t) => COMMERCE_TYPES.includes(t);
+
+export const DEFAULT_OCCASIONS = [
+  { key: 'wedding', label: '💍 Wedding' }, { key: 'festival', label: '🪔 Festival gifting' },
+  { key: 'corporate', label: '🏢 Corporate' }, { key: 'other', label: '🎉 Other / catering' },
+];
+export const DEFAULT_SHOP_TEXT = '🙏 Welcome to *{shop}*!\nWhat would you like to do?';
+export const SHOP_LIMITS = { EXTRAS_MAX: 6, ROWS_MAX: 10, OCCASIONS_MAX: 10 };
 
 export const FIELD_TYPES = [
   { value: 'text', label: 'Text' },
@@ -56,6 +76,26 @@ export const titleLimit = (count) => (count <= WA.BUTTONS_MAX ? WA.BUTTON_TITLE 
 export const blankMessage = () => ({ nodeType: 'message', text: '', options: [], isEnd: false });
 export const blankFlow = () => ({ start: 'Q1', questions: { Q1: blankMessage() } });
 
+// Switching a node's type keeps its text and starts the new type with sensible defaults
+export function convertNode(t, old = {}) {
+  const base = { text: old.text || '', isEnd: false };
+  switch (t) {
+    case 'message': return { ...base, nodeType: t, options: old.options || [] };
+    case 'products': return { ...base, nodeType: t, products: old.products || [], productsNext: null };
+    case 'steps': return { ...base, nodeType: t, steps: old.steps || [], stepsNext: null };
+    case 'form': return { ...base, nodeType: t, formFields: old.formFields || [], formSubmitLabel: 'Submit', formNext: null };
+    case 'shop': return { nodeType: t, isEnd: false, text: old.text || DEFAULT_SHOP_TEXT, shopCategories: [], shopProducts: [], shopExtras: [], checkoutNext: null };
+    case 'checkout': return { nodeType: t, isEnd: false, text: '', allowDelivery: true, allowPickup: true, askName: true, namePrompt: '', addressPrompt: '' };
+    case 'bulk': return { nodeType: t, isEnd: false, text: old.text || '🎁 *Bulk, gifting & catering*\nWhat is the occasion?', bulkOccasions: DEFAULT_OCCASIONS.map((o) => ({ ...o })), bulkDetailsPrompt: '', bulkDatePrompt: '', bulkSuccessText: '', bulkNext: null };
+    case 'track': return { nodeType: t, isEnd: false, text: '', trackNext: null };
+    case 'outlets': return { nodeType: t, isEnd: false, text: '', outletsMaps: true, outletsNext: null };
+    default: return { ...base, nodeType: 'message', options: [] };
+  }
+}
+
+// every field that can point at another node (used when a node is deleted)
+export const NEXT_FIELDS = ['productsNext', 'stepsNext', 'formNext', 'checkoutNext', 'bulkNext', 'trackNext', 'outletsNext'];
+
 export function nextNodeKey(questions) {
   let n = 1;
   while (questions[`Q${n}`]) n++;
@@ -75,6 +115,10 @@ export function nodeChildren(node) {
   if (t === 'products') return node.productsNext ? [node.productsNext] : [];
   if (t === 'steps') return node.stepsNext ? [node.stepsNext] : [];
   if (t === 'form') return node.formNext ? [node.formNext] : [];
+  if (t === 'shop') return [...(node.shopExtras || []).map((x) => x.next), node.checkoutNext].filter(Boolean);
+  if (t === 'bulk') return node.bulkNext ? [node.bulkNext] : [];
+  if (t === 'track') return node.trackNext ? [node.trackNext] : [];
+  if (t === 'outlets') return node.outletsNext ? [node.outletsNext] : [];
   return [];
 }
 
@@ -159,6 +203,37 @@ export function validateFlow(flow, languages, { ecommerce = true } = {}) {
           if (o.url && !URL_RE.test(o.url)) E(lang, key, `Option ${i + 1}: link must start with http:// or https://`);
           if (o.handoff && !ecommerce) E(lang, key, `Option ${i + 1}: handing over to the ordering bot needs Ecommerce operations (ask the Super Admin).`);
         });
+      }
+
+      if (isCommerceType(t)) {
+        if (!ecommerce) E(lang, key, `A “${NODE_TYPES[t].label}” node needs Ecommerce operations (ask the Super Admin).`);
+        if (t === 'shop') {
+          const xs = node.shopExtras || [];
+          if (!node.text?.trim()) E(lang, key, 'Write the welcome message customers see above the menu.');
+          if (xs.length > SHOP_LIMITS.EXTRAS_MAX) E(lang, key, `At most ${SHOP_LIMITS.EXTRAS_MAX} extra menu rows (you have ${xs.length}) — a WhatsApp list shows ${SHOP_LIMITS.ROWS_MAX} rows in total.`);
+          xs.forEach((x, i) => {
+            if (!x.text?.trim()) E(lang, key, `Extra menu row ${i + 1} has no text.`);
+            else if (x.text.length > WA.LIST_TITLE) W(lang, key, `Extra row “${x.text}” is ${x.text.length} characters and will be shortened to ${WA.LIST_TITLE} on WhatsApp.`);
+            if (!x.next) E(lang, key, `Extra menu row ${i + 1} must lead to a node.`);
+            else if (!exists(x.next)) E(lang, key, `Extra menu row ${i + 1} points to a deleted node.`);
+          });
+          if (!node.checkoutNext) E(lang, key, 'Choose which node opens when the customer taps “Checkout”.');
+          else if (!exists(node.checkoutNext)) E(lang, key, '“Checkout” points to a deleted node.');
+        }
+        if (t === 'checkout' && node.allowDelivery === false && node.allowPickup === false) E(lang, key, 'Allow home delivery, self pickup, or both.');
+        if (t === 'bulk') {
+          const os = node.bulkOccasions || [];
+          if (!node.text?.trim()) E(lang, key, 'Write the intro text for the occasion list.');
+          if (!os.length) E(lang, key, 'Add at least one occasion.');
+          if (os.length > SHOP_LIMITS.OCCASIONS_MAX) E(lang, key, `At most ${SHOP_LIMITS.OCCASIONS_MAX} occasions (you have ${os.length}).`);
+          os.forEach((o, i) => {
+            if (!o.label?.trim()) E(lang, key, `Occasion ${i + 1} has no name.`);
+            else if (o.label.length > WA.LIST_TITLE) W(lang, key, `Occasion “${o.label}” is ${o.label.length} characters and will be shortened to ${WA.LIST_TITLE} on WhatsApp.`);
+          });
+          if (!exists(node.bulkNext)) E(lang, key, '“After the enquiry, continue to” points to a deleted node.');
+        }
+        if (t === 'track' && !exists(node.trackNext)) E(lang, key, '“After the status, continue to” points to a deleted node.');
+        if (t === 'outlets' && !exists(node.outletsNext)) E(lang, key, '“After the outlets, continue to” points to a deleted node.');
       }
 
       if (t === 'products') {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { WA, choiceKind } from './flowUtils';
+import { api } from '../../../api/client';
+import { WA, choiceKind, isCommerceType } from './flowUtils';
 
 /*
 | WhatsApp simulator — walks the flow exactly the way the bot will render it:
@@ -29,6 +30,8 @@ export default function WhatsAppPreview({ questions, start, businessName = 'Your
   const [text, setText] = useState('');
   const bodyRef = useRef(null);
   const seq = useRef(0);
+  const [cats, setCats] = useState([]);           // live categories, so the shop menu preview shows the real rows
+  useEffect(() => { if (Object.values(questions).some((n) => isCommerceType(n.nodeType))) api('/categories').then((r) => setCats(r.data.filter((c) => c.active))).catch(() => {}); }, []); // eslint-disable-line
 
   const push = (...items) => setMsgs((m) => [...m, ...items.map((i) => ({ id: ++seq.current, ...i }))]);
   const endConv = () => push({ from: 'sys', text: 'Conversation ended — customer can send “hi” to start again' });
@@ -48,6 +51,26 @@ export default function WhatsAppPreview({ questions, start, businessName = 'Your
     if (t === 'products') return showProducts(key, n);
     if (t === 'steps') return showStep(key, n, 0);
     if (t === 'form') return startForm(key, n);
+    if (isCommerceType(t)) return showCommerce(key, n, t);
+  };
+
+  // Shop nodes need live data + payments, so only the menu is simulated here; "Test with real data" runs the full flow.
+  const showCommerce = (key, n, t) => {
+    if (t === 'shop') {
+      const only = n.shopCategories || [];
+      const shown = cats.filter((c) => !only.length || only.includes(c.key));
+      const rows = [
+        ...shown.map((c) => ({ title: `${c.emoji ? c.emoji + ' ' : ''}${c.label}`, act: { t: 'cat', label: c.label, count: c.products } })),
+        ...(n.shopExtras || []).map((x) => ({ title: x.text || '(no text)', act: { t: 'extra', text: x.text, next: x.next } })),
+      ].slice(0, 10);
+      return push({ from: 'bot', text: (n.text || '').replace(/\{shop\}/gi, businessName) || '(empty message)', list: { title: 'Open menu', rows } },
+        { from: 'sys', text: '🛍 Categories come live from your Product section. Tapping a category, ordering and paying run only on WhatsApp — use “Test with real data” to try them.' });
+    }
+    const what = { checkout: '🧾 Checkout: name → delivery / pickup → location → nearest outlet → address or pickup slot → summary → Razorpay link', bulk: '🎁 Bulk enquiry: occasion → what you need → needed by → saved + owner alerted', track: '📦 Latest order status is sent here', outlets: '📍 Your active outlets (address, phone, hours) + map pins are sent here' }[t];
+    push({ from: 'sys', text: `${what} (live data — try it with “Test with real data”)` });
+    const next = n.bulkNext || n.trackNext || n.outletsNext;
+    if (next) return goto(next);
+    endConv();
   };
 
   const choiceMsg = (body, items, mk) => {
@@ -124,6 +147,8 @@ export default function WhatsAppPreview({ questions, start, businessName = 'Your
       if (a.next) return goto(a.next);
       return a.url ? goto(a.key) : endConv();
     }
+    if (a.t === 'cat') { user(a.label); return push({ from: 'sys', text: `Products of “${a.label}” (${a.count ?? 0}) are listed live from your Product section` }); }
+    if (a.t === 'extra') { user(a.text); return a.next ? goto(a.next) : endConv(); }
     if (a.t === 'cont') { user('Continue ▶'); return goto(a.next); }
     if (a.t === 'step') { user(a.label); return showStep(a.key, n, a.i); }
     if (a.t === 'finish') {

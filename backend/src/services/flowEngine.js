@@ -5,12 +5,14 @@
    products -> one picture card per product with an "open link" button (cta_url), then an optional Continue button.
    form     -> asks every field one by one in the chat (validated), saves a FlowSubmission, optional follow-up node.
    steps    -> one step per message with Back / Next buttons, a closing message, optional follow-up node.
+ shop / checkout / bulk / track / outlets -> commerce nodes backed by the admin's live products, branches and orders (see shopEngine.js).
  Navigation is carried in the reply ids (o:<node>:<i>, c:<node>, s:<node>:<i>, sf:<node>, f:<field>:<i>, lang:<x>), so old
  buttons keep working. State (language, current node, half-finished form) lives in session.flow.
 */
 const FlowSubmission = require('../models/FlowSubmission');
 const { t } = require('./i18n');
 const { clip, newId } = require('../utils/helpers');
+const shop = require('./shopEngine');
 
 const LIST_PAGE = 9;
 const eq = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
@@ -64,8 +66,11 @@ async function handle(ctx) {
     }
   }
 
-  // typed text on a question: match an option by label / number / text
+  // a commerce node (shop / checkout / bulk ...) is active, or the customer sent a cart from the WhatsApp catalog
   const cur = nodeOf(ctx, s.node);
+  if (shop.isCommerce(cur) || (input.type === 'order' && shop.findKey(ctx, 'shop'))) return shop.handle(ctx, api);
+
+  // typed text on a question: match an option by label / number / text
   if (cur && cur.nodeType === 'message' && !cur.isEnd && input.text) {
     const q = input.text;
     let idx = cur.options.findIndex((o) => eq(o.label, q) || eq(o.text, q));
@@ -89,11 +94,13 @@ async function sendNode(ctx, key, { page = 0 } = {}) {
   const node = nodeOf(ctx, key);
   const s = st(ctx);
   if (!node) return endChat(ctx);
+  if (s.node && s.node !== key) s.prev = s.node;
   s.node = key; s.page = page; s.form = null; s.stepIdx = 0;
   ctx.session.awaitingInput = false;
   touch(ctx);
 
   switch (node.nodeType) {
+    case 'shop': case 'checkout': case 'bulk': case 'track': case 'outlets': return shop.enter(ctx, key, node, api);
     case 'products': return sendProducts(ctx, key, node);
     case 'form': return startForm(ctx, key, node);
     case 'steps': return sendStepsIntro(ctx, key, node);
@@ -302,5 +309,8 @@ async function finishForm(ctx, node) {
   }
   return goNext(ctx, node.formNext);
 }
+
+// what the commerce engine needs from this file (kept as an object so the two files do not require each other)
+const api = { sendNode, goNext, startNode: (ctx) => sendNode(ctx, ctx.flow[st(ctx).lang].start) };
 
 module.exports = { start, handle, validate, parseDate };

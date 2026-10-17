@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../../context/AuthContext';
 import { api, download, qs } from '../../../api/client';
 import Modal from '../../../components/Modal';
 import { Loader, PageHeader } from '../../../components/common';
@@ -10,6 +11,7 @@ export const nodeTotal = (nodeCount) => Object.values(nodeCount || {}).reduce((a
 
 export default function FlowList() {
   const nav = useNavigate();
+  const { isEcommerce } = useAuth();
   const [flows, setFlows] = useState(null);
   const [filters, setFilters] = useState({ q: '', status: '' });
   const [show, setShow] = useState(false);
@@ -36,8 +38,9 @@ export default function FlowList() {
     if (form.languages.length > MAX_LANGS) return setErr(`A chat flow supports up to ${MAX_LANGS} languages`);
     setBusy(true);
     try {
-      const flow = Object.fromEntries(form.languages.map((l) => [l, form.template === 'starter' ? starterFlow(l) : blankFlow()]));
-      const r = await api('/chatflows', { method: 'POST', body: { name: form.name, description: form.description, languages: form.languages, flow } });
+      // the shop template is built by the server (it knows the exact ordering flow); the others are built here
+      const flow = form.template === 'shop' ? undefined : Object.fromEntries(form.languages.map((l) => [l, form.template === 'starter' ? starterFlow(l) : blankFlow()]));
+      const r = await api('/chatflows', { method: 'POST', body: { name: form.name, description: form.description, languages: form.languages, ...(flow ? { flow } : { template: 'shop' }) } });
       nav(`/app/flows/${r.data.id}`);
     } catch (er) { setErr(er.message); }
     setBusy(false);
@@ -119,10 +122,12 @@ export default function FlowList() {
             {form.languages.length > 1 && <p className="helper-text" style={{ marginBottom: 12 }}>With more than one language the bot first asks the customer to pick a language, then runs that language's flow.</p>}
             <label>Start from
               <select value={form.template} onChange={(e) => setForm({ ...form, template: e.target.value })}>
+                {isEcommerce && <option value="shop">🛍️ Shop ordering — live products, cart, checkout, payment, bulk, track, outlets</option>}
                 <option value="starter">Starter — menu, product cards, enquiry form</option>
                 <option value="blank">Blank — one empty message</option>
               </select>
             </label>
+            {form.template === 'shop' && <p className="helper-text" style={{ marginBottom: 12 }}>Builds the full sweet-shop ordering chat from your <b>Product, Category and Outlet</b> pages: menu → category → product → size → quantity → cart → checkout → Razorpay, plus Bulk &amp; Gifting, Track my order and Our outlets. Edit any step afterwards.</p>}
             {err && <p className="error-text">{err}</p>}
             <div className="modal-actions">
               <button type="button" className="btn secondary" onClick={() => setShow(false)}>Cancel</button>

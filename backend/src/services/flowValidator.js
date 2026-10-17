@@ -4,14 +4,17 @@
  Returns { flow, errors, warnings }. `flow` is a clean copy (unknown keys dropped, strings trimmed/capped);
  `errors` block the flow from going live; `warnings` are WhatsApp-specific things that will be shortened/ignored.
 */
-const NODE_TYPES = ['message', 'products', 'form', 'steps'];
+const COMMERCE_TYPES = ['shop', 'checkout', 'bulk', 'track', 'outlets'];   // need Ecommerce operations (live products, branches, orders)
+const NODE_TYPES = ['message', 'products', 'form', 'steps', ...COMMERCE_TYPES];
 const FIELD_TYPES = ['text', 'number', 'tel', 'email', 'date', 'textarea', 'file', 'select'];
 const KEY_RE = /^[A-Za-z0-9_-]{1,40}$/;            // node keys travel inside WhatsApp reply ids: no ":" allowed
 const LANG_RE = /^[a-z][a-z0-9-]{1,19}$/;
 const FIELD_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 const URL_RE = /^https?:\/\/[^\s]{3,2000}$/i;
 
-const LIMITS = { options: 30, cards: 10, steps: 20, fields: 15, selectChoices: 10 };
+const LIMITS = { options: 30, cards: 10, steps: 20, fields: 15, selectChoices: 10, extras: 6, categories: 30, shopProducts: 200, occasions: 10 };
+const CAT_KEY_RE = /^[a-z0-9-]{1,30}$/;
+const SLUG_RE = /^[a-z0-9-]{1,30}$/;
 
 const str = (v, max) => (v === undefined || v === null ? '' : String(v)).trim().slice(0, max);
 const strOrNull = (v) => { const s = str(v, 40); return s || null; };
@@ -137,6 +140,55 @@ function sanitizeFlow(input, { languages, ecommerce = true } = {}) {
           closingTitle: str(n.closingTitle, 120), closingMessage: str(n.closingMessage, 800), closingImage,
         };
       }
+
+      if (COMMERCE_TYPES.includes(type)) {
+        if (!ecommerce) errors.push(`Node "${key}" ${L} is a ${type} node, which needs Ecommerce operations (not enabled for your account)`);
+        const nxt = (v) => strOrNull(v);
+        if (type === 'shop') {
+          if (!text) errors.push(`Shop node "${key}" ${L} needs a welcome message`);
+          const cats = [...new Set((Array.isArray(n.shopCategories) ? n.shopCategories : []).map((c) => str(c, 30).toLowerCase()).filter(Boolean))];
+          cats.forEach((c) => { if (!CAT_KEY_RE.test(c)) errors.push(`Shop node "${key}" ${L}: category "${c}" is not valid`); });
+          if (cats.length > LIMITS.categories) errors.push(`Shop node "${key}" ${L} lists ${cats.length} categories (max ${LIMITS.categories})`);
+          const prods = [...new Set((Array.isArray(n.shopProducts) ? n.shopProducts : []).map((c) => str(c, 60).toUpperCase()).filter(Boolean))];
+          if (prods.length > LIMITS.shopProducts) errors.push(`Shop node "${key}" ${L} limits to ${prods.length} products (max ${LIMITS.shopProducts})`);
+          const extras = (Array.isArray(n.shopExtras) ? n.shopExtras : []).map((x) => ({ text: str(x?.text, 100), description: str(x?.description, 72), next: nxt(x?.next) }));
+          if (extras.length > LIMITS.extras) errors.push(`Shop node "${key}" ${L} has ${extras.length} extra menu rows (max ${LIMITS.extras}; the WhatsApp list shows 10 rows in total)`);
+          extras.forEach((x) => {
+            if (!x.text) errors.push(`An extra menu row in "${key}" ${L} has no text`);
+            else if (x.text.length > 24) warnings.push(`Extra row "${x.text}" in "${key}" ${L} is longer than 24 characters and will be shortened on WhatsApp`);
+            if (!x.next) errors.push(`Extra row "${x.text}" in "${key}" ${L} must lead to a node`);
+          });
+          if (!nxt(n.checkoutNext)) errors.push(`Shop node "${key}" ${L}: choose the node that opens when the customer taps Checkout`);
+          nodes[key] = { nodeType: 'shop', text, isEnd: false, shopCategories: cats, shopProducts: prods, shopExtras: extras, checkoutNext: nxt(n.checkoutNext) };
+        }
+        if (type === 'checkout') {
+          const allowDelivery = n.allowDelivery !== false, allowPickup = n.allowPickup !== false;
+          if (!allowDelivery && !allowPickup) errors.push(`Checkout node "${key}" ${L} must allow home delivery, self pickup or both`);
+          nodes[key] = {
+            nodeType: 'checkout', text, isEnd: false, allowDelivery, allowPickup, askName: n.askName !== false,
+            namePrompt: str(n.namePrompt, 300), addressPrompt: str(n.addressPrompt, 300),
+          };
+        }
+        if (type === 'bulk') {
+          if (!text) errors.push(`Bulk node "${key}" ${L} needs an intro text`);
+          const seenK = new Set();
+          const occ = (Array.isArray(n.bulkOccasions) ? n.bulkOccasions : []).map((o, i) => ({ key: str(o?.key, 30).toLowerCase() || `occasion-${i + 1}`, label: str(o?.label, 100) }));
+          if (occ.length > LIMITS.occasions) errors.push(`Bulk node "${key}" ${L} has ${occ.length} occasions (max ${LIMITS.occasions})`);
+          occ.forEach((o) => {
+            if (!o.label) errors.push(`An occasion in "${key}" ${L} has no name`);
+            else if (o.label.length > 24) warnings.push(`Occasion "${o.label}" in "${key}" ${L} is longer than 24 characters and will be shortened on WhatsApp`);
+            if (!SLUG_RE.test(o.key)) errors.push(`Occasion "${o.label}" in "${key}" ${L} has an invalid key (letters, numbers, "-")`);
+            if (seenK.has(o.key)) errors.push(`Bulk node "${key}" ${L} has two occasions with the key "${o.key}"`);
+            seenK.add(o.key);
+          });
+          nodes[key] = {
+            nodeType: 'bulk', text, isEnd: false, bulkOccasions: occ, bulkDetailsPrompt: str(n.bulkDetailsPrompt, 400),
+            bulkDatePrompt: str(n.bulkDatePrompt, 300), bulkSuccessText: str(n.bulkSuccessText, 800), bulkNext: nxt(n.bulkNext),
+          };
+        }
+        if (type === 'track') nodes[key] = { nodeType: 'track', text, isEnd: false, trackNext: nxt(n.trackNext) };
+        if (type === 'outlets') nodes[key] = { nodeType: 'outlets', text, isEnd: false, outletsMaps: n.outletsMaps !== false, outletsNext: nxt(n.outletsNext) };
+      }
     }
 
     const start = str(lf.start, 40);
@@ -148,7 +200,9 @@ function sanitizeFlow(input, { languages, ecommerce = true } = {}) {
     for (const [key, n] of Object.entries(nodes)) {
       const refs = [
         ...(n.options || []).map((o) => ['Option "' + o.text + '"', o.next]),
+        ...(n.shopExtras || []).map((x) => ['Extra row "' + x.text + '"', x.next]),
         ['"Continue"', n.productsNext], ['"After submit"', n.formNext], ['"After the last step"', n.stepsNext],
+        ['"Checkout"', n.checkoutNext], ['"After the enquiry"', n.bulkNext], ['"After tracking"', n.trackNext], ['"After outlets"', n.outletsNext],
       ];
       for (const [what, ref] of refs) if (ref && !nodes[ref]) errors.push(`${what} in "${key}" ${L} points to a missing node "${ref}"`);
     }
@@ -159,7 +213,7 @@ function sanitizeFlow(input, { languages, ecommerce = true } = {}) {
       const stack = [start];
       while (stack.length) {
         const n = nodes[stack.pop()];
-        const next = [...(n.options || []).map((o) => o.next), n.productsNext, n.formNext, n.stepsNext].filter(Boolean);
+        const next = [...(n.options || []).map((o) => o.next), ...(n.shopExtras || []).map((x) => x.next), n.productsNext, n.formNext, n.stepsNext, n.checkoutNext, n.bulkNext, n.trackNext, n.outletsNext].filter(Boolean);
         for (const k of next) if (nodes[k] && !seen.has(k)) { seen.add(k); stack.push(k); }
       }
       const lost = Object.keys(nodes).filter((k) => !seen.has(k));
@@ -175,4 +229,4 @@ function sanitizeFlow(input, { languages, ecommerce = true } = {}) {
   return { flow: out, errors, warnings };
 }
 
-module.exports = { sanitizeFlow, NODE_TYPES, FIELD_TYPES, LIMITS, LANG_RE };
+module.exports = { sanitizeFlow, NODE_TYPES, COMMERCE_TYPES, FIELD_TYPES, LIMITS, LANG_RE };

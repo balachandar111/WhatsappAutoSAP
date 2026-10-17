@@ -40,4 +40,37 @@ const sample = (lang = 'english') => ({
   },
 });
 
-module.exports = { blank, sample };
+// The wa-sweet-mern ordering flow, as builder nodes. Categories, products, sizes, prices, stock per outlet and outlets all come
+// from the admin's Product / Category / Branch pages - nothing is typed into the flow.
+//   Q1 menu (categories + Bulk / Track / Outlets rows)  ->  category -> product -> size -> qty -> cart  ->  Checkout
+//   Q2 checkout: name -> delivery | pickup -> location -> nearest outlet -> address (or outlet -> slot) -> summary -> Razorpay link
+//   Q3 bulk & gifting enquiry   Q4 track my order   Q5 our outlets
+const shop = (lang = 'english') => ({
+  [lang]: {
+    start: 'Q1',
+    questions: {
+      Q1: {
+        nodeType: 'shop', isEnd: false, text: '🙏 Welcome to *{shop}*!\nWhat would you like to do?',
+        shopCategories: [], shopProducts: [], checkoutNext: 'Q2',
+        shopExtras: [
+          { text: '🎁 Bulk & Gifting', description: 'Wedding, festival, corporate', next: 'Q3' },
+          { text: '📦 Track my order', description: 'Latest order status', next: 'Q4' },
+          { text: '📍 Our outlets', description: 'Address, phone & map', next: 'Q5' },
+        ],
+      },
+      Q2: { nodeType: 'checkout', text: '', isEnd: false, allowDelivery: true, allowPickup: true, askName: true, namePrompt: '', addressPrompt: '' },
+      Q3: {
+        nodeType: 'bulk', isEnd: false, text: '🎁 *Bulk, gifting & catering*\nWhat is the occasion?', bulkNext: null,
+        bulkOccasions: [
+          { key: 'wedding', label: '💍 Wedding' }, { key: 'festival', label: '🪔 Festival gifting' },
+          { key: 'corporate', label: '🏢 Corporate' }, { key: 'other', label: '🎉 Other / catering' },
+        ],
+        bulkDetailsPrompt: '', bulkDatePrompt: '', bulkSuccessText: '',
+      },
+      Q4: { nodeType: 'track', text: '', isEnd: false, trackNext: null },
+      Q5: { nodeType: 'outlets', text: '', isEnd: false, outletsMaps: true, outletsNext: null },
+    },
+  },
+});
+
+module.exports = { blank, sample, shop };

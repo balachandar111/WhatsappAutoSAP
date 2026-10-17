@@ -6,12 +6,17 @@ import Modal from '../../../components/Modal';
 import { Loader } from '../../../components/common';
 import { Badge } from '../../../lib/ui';
 import AutomationModal from '../../../components/AutomationModal';
+import SimulatorModal from '../../../components/SimulatorModal';
 import FlowMap from './FlowMap';
 import WhatsAppPreview from './WhatsAppPreview';
-import { FormEditor, MessageEditor, ProductsEditor, StepsEditor } from './NodeEditors';
-import { LANGS, LANG_RE, MAX_LANGS, NODE_TYPES, WA, blankFlow, blankMessage, buildFlowState, langLabel, nextNodeKey, validateFlow } from './flowUtils';
+import { BulkEditor, CheckoutEditor, FormEditor, MessageEditor, OutletsEditor, ProductsEditor, ShopEditor, StepsEditor, TrackEditor } from './NodeEditors';
+import { LANGS, LANG_RE, MAX_LANGS, NEXT_FIELDS, NODE_TYPES, WA, blankFlow, buildFlowState, convertNode, langLabel, nextNodeKey, validateFlow } from './flowUtils';
 
-const EDITORS = { message: MessageEditor, products: ProductsEditor, steps: StepsEditor, form: FormEditor };
+const EDITORS = { message: MessageEditor, products: ProductsEditor, steps: StepsEditor, form: FormEditor, shop: ShopEditor, checkout: CheckoutEditor, bulk: BulkEditor, track: TrackEditor, outlets: OutletsEditor };
+// these node types send no text of their own (everything comes from the live Product / Outlet / Order data)
+const NO_TEXT = ['checkout', 'track', 'outlets'];
+const TEXT_LABEL = { message: 'Message text', form: 'Intro text (sent before the first question)', shop: 'Welcome message (shown above the menu)', bulk: 'Intro text (shown above the occasion list)' };
+const TEXT_HINT = { message: 'e.g. How can we help you today?', shop: 'e.g. 🙏 Welcome to *{shop}*!' };
 
 export default function FlowBuilder() {
   const { id } = useParams();
@@ -31,6 +36,7 @@ export default function FlowBuilder() {
   const [showAuto, setShowAuto] = useState(false);
   const [showChecks, setShowChecks] = useState(true);
   const [showLang, setShowLang] = useState(false);
+  const [showTest, setShowTest] = useState(false);
   const [bizName, setBizName] = useState('Your business');
   const [loadErr, setLoadErr] = useState('');
   const fileRef = useRef(null);
@@ -65,24 +71,17 @@ export default function FlowBuilder() {
   /* ---------------- state updates (all immutable) ---------------- */
   const updateLF = (fn) => { setFlow((p) => ({ ...p, [lang]: fn(p[lang] || blankFlow()) })); setDirty(true); };
   const updateNode = (key, patch) => updateLF((l) => ({ ...l, questions: { ...l.questions, [key]: { ...l.questions[key], ...patch } } }));
-  const addNode = () => updateLF((l) => ({ ...l, questions: { ...l.questions, [nextNodeKey(l.questions)]: blankMessage() } }));
+  const addNode = (type = 'message') => updateLF((l) => ({ ...l, questions: { ...l.questions, [nextNodeKey(l.questions)]: convertNode(type) } }));
 
-  const setNodeType = (key, t) => updateLF((l) => {
-    const old = l.questions[key];
-    const base = { text: old.text || '', isEnd: false };
-    const node = t === 'message' ? { ...base, nodeType: t, options: old.options || [] }
-      : t === 'products' ? { ...base, nodeType: t, products: old.products || [], productsNext: null }
-      : t === 'steps' ? { ...base, nodeType: t, steps: old.steps || [], stepsNext: null }
-      : { ...base, nodeType: t, formFields: old.formFields || [], formSubmitLabel: 'Submit', formNext: null };
-    return { ...l, questions: { ...l.questions, [key]: node } };
-  });
+  const setNodeType = (key, t) => updateLF((l) => ({ ...l, questions: { ...l.questions, [key]: convertNode(t, l.questions[key]) } }));
 
   const removeNode = (key) => updateLF((l) => {
     const questions = {};
     Object.entries(l.questions).filter(([k]) => k !== key).forEach(([k, n]) => {
       const c = { ...n };
       if (c.options) c.options = c.options.map((o) => (o.next === key ? { ...o, next: '' } : o));
-      ['productsNext', 'stepsNext', 'formNext'].forEach((f) => { if (c[f] === key) c[f] = null; });
+      if (c.shopExtras) c.shopExtras = c.shopExtras.map((x) => (x.next === key ? { ...x, next: '' } : x));
+      NEXT_FIELDS.forEach((f) => { if (c[f] === key) c[f] = null; });
       questions[k] = c;
     });
     let start = l.start;
@@ -174,6 +173,8 @@ export default function FlowBuilder() {
         </div>
         <div className="page-actions">
           <button className="btn secondary" onClick={() => setShowPreview((s) => !s)}>{showPreview ? 'Hide preview' : '📱 Show preview'}</button>
+          <button className="btn secondary" onClick={() => setShowTest(true)} disabled={!doc.hasLiveVersion || dirty}
+            title={!doc.hasLiveVersion ? 'Save a valid flow first' : dirty ? 'Save your changes first — the test runs the saved version' : 'Run the real chatbot engine with your real products and outlets (nothing is sent, no orders are created)'}>🧪 Test with real data</button>
           <button className="btn secondary" onClick={exportExcel} title="Download this flow as an Excel file">⬇ Excel</button>
           <button className="btn secondary" onClick={() => fileRef.current?.click()} title="Replace this flow with an Excel file">⬆ Import</button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={importExcel} />
@@ -210,7 +211,11 @@ export default function FlowBuilder() {
                   {keys.map((k) => <option key={k} value={k}>{k}{questions[k].text ? ` — ${questions[k].text.slice(0, 32)}` : ''}</option>)}
                 </select>
               </label>
-              <button className="btn outline small" style={{ marginLeft: 'auto' }} onClick={addNode}>+ Add node</button>
+              <select className="btn outline small" style={{ marginLeft: 'auto', width: 'auto' }} value="" aria-label="Add a node"
+                onChange={(e) => { if (e.target.value) addNode(e.target.value); e.target.value = ''; }}>
+                <option value="">+ Add node…</option>
+                {Object.entries(NODE_TYPES).filter(([, v]) => !v.commerce || isEcommerce).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+              </select>
             </div>
           </div>
 
@@ -254,16 +259,18 @@ export default function FlowBuilder() {
                   <span className="badge blue">{key}</span>
                   {lf.start === key ? <span className="badge green">Start</span> : <button className="btn ghost small" onClick={() => updateLF((l) => ({ ...l, start: key }))}>Make start</button>}
                   <select style={{ marginLeft: 'auto', width: 'auto' }} value={t} onChange={(e) => setNodeType(key, e.target.value)} aria-label="Node type">
-                    {Object.entries(NODE_TYPES).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+                    {Object.entries(NODE_TYPES).filter(([k, v]) => !v.commerce || isEcommerce || k === t).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
                   </select>
                   <button className="btn danger small" onClick={() => removeNode(key)} disabled={keys.length === 1}>Delete</button>
                 </div>
                 {mine.length > 0 && <div className="node-issues">{mine.map((e, i) => <div key={i}>❌ {e.msg}</div>)}</div>}
                 {myWarn.length > 0 && <div className="node-issues warn">{myWarn.map((e, i) => <div key={i}>⚠️ {e.msg}</div>)}</div>}
-                <label>{t === 'message' ? 'Message text' : t === 'form' ? 'Intro text (sent before the first question)' : 'Heading sent before this'}
-                  <textarea rows={2} value={node.text} onChange={(e) => updateNode(key, { text: e.target.value })} placeholder={t === 'message' ? 'e.g. How can we help you today?' : 'e.g. Here are our bestsellers:'} />
-                  <div className={'counter' + ((node.text || '').length > WA.BODY_MAX ? ' over' : '')}>{(node.text || '').length}/{WA.BODY_MAX}</div>
-                </label>
+                {!NO_TEXT.includes(t) && (
+                  <label>{TEXT_LABEL[t] || 'Heading sent before this'}
+                    <textarea rows={2} value={node.text} onChange={(e) => updateNode(key, { text: e.target.value })} placeholder={TEXT_HINT[t] || 'e.g. Here are our bestsellers:'} />
+                    <div className={'counter' + ((node.text || '').length > WA.BODY_MAX ? ' over' : '')}>{(node.text || '').length}/{WA.BODY_MAX}</div>
+                  </label>
+                )}
                 <Editor node={node} keys={keys.filter((k) => k !== key)} onChange={(patch) => updateNode(key, patch)} />
               </div>
             );
@@ -276,6 +283,8 @@ export default function FlowBuilder() {
           </aside>
         )}
       </div>
+
+      {showTest && <SimulatorModal automation={{ id, name: name || doc.name }} endpoint={`/chatflows/${id}/simulate`} onClose={() => setShowTest(false)} />}
 
       {showLang && <AddLanguageModal existing={langs} current={lang} onAdd={addLanguage} onClose={() => setShowLang(false)} />}
 

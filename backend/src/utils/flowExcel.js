@@ -23,7 +23,11 @@ const XLSX = require("xlsx");
 | FormFields all render in the order they appear in the sheet).
 */
 
-const NODE_TYPES = ["message", "products", "form", "steps"];
+const COMMERCE_TYPES = ["shop", "checkout", "bulk", "track", "outlets"];
+const NODE_TYPES = ["message", "products", "form", "steps", ...COMMERCE_TYPES];
+// settings of a commerce node live in one JSON cell ("Config") of the Nodes sheet; the flow validator sanitizes them on import
+const CONFIG_KEYS = ["shopCategories", "shopProducts", "shopExtras", "checkoutNext", "allowDelivery", "allowPickup", "askName", "namePrompt", "addressPrompt",
+  "bulkOccasions", "bulkDetailsPrompt", "bulkDatePrompt", "bulkSuccessText", "bulkNext", "trackNext", "outletsMaps", "outletsNext"];
 const FIELD_TYPES = ["text", "number", "tel", "email", "date", "textarea", "file", "select"];
 
 // Options / ShowIfField / ShowIfEquals cells accept comma, semicolon, or
@@ -127,6 +131,15 @@ function parseFlowWorkbook(buffer) {
       node = { ...base, products: [], productsNext: clean(row.ProductsNext) || null };
     } else if (nodeType === "steps") {
       node = { ...base, steps: [], stepsNext: clean(row.StepsNext) || null };
+    } else if (COMMERCE_TYPES.includes(nodeType)) {
+      let cfg = {};
+      const raw = clean(row.Config);
+      if (raw) {
+        try { cfg = JSON.parse(raw); } catch { return { flow: null, error: `Nodes sheet, row ${rowNum} (${key}): the Config cell is not valid JSON` }; }
+        if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return { flow: null, error: `Nodes sheet, row ${rowNum} (${key}): the Config cell must be a JSON object` };
+      }
+      node = { ...base };
+      for (const k of CONFIG_KEYS) if (cfg[k] !== undefined) node[k] = cfg[k];
     } else {
       node = {
         ...base,
@@ -310,6 +323,7 @@ function flowToWorkbookBuffer(flow) {
         StepsNext: nodeType === "steps" ? node.stepsNext || "" : "",
         FormNext: nodeType === "form" ? node.formNext || "" : "",
         FormSubmitLabel: nodeType === "form" ? node.formSubmitLabel || "Submit" : "",
+        Config: COMMERCE_TYPES.includes(nodeType) ? JSON.stringify(Object.fromEntries(CONFIG_KEYS.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]))) : "",
       });
 
       (node.options || []).forEach((o) =>
@@ -352,7 +366,8 @@ function flowToWorkbookBuffer(flow) {
 const INSTRUCTIONS_ROWS = [
   { Sheet: "Nodes", "What it's for": "One row per question node. Every node your bot can show goes here first." },
   { Sheet: "", "What it's for": 'NodeKey = a short unique name for the node, e.g. "Q1" (this is how other sheets refer to it).' },
-  { Sheet: "", "What it's for": "NodeType = message (question + tappable options), products, steps, or form." },
+  { Sheet: "", "What it's for": "NodeType = message (question + tappable options), products, steps, form, or the shop nodes: shop, checkout, bulk, track, outlets." },
+  { Sheet: "", "What it's for": "Shop nodes use your live Product / Category / Branch pages. Their settings go in the Config column as JSON (export a flow built in the builder to see examples). Needs Ecommerce operations." },
   { Sheet: "", "What it's for": 'IsStart = "yes" on exactly one node per language — that\'s the first message shown.' },
   { Sheet: "", "What it's for": 'IsEnd = "yes" on a message node with no options — a final reply, nothing after it.' },
   { Sheet: "", "What it's for": "ProductsNext / StepsNext / FormNext = NodeKey to continue to afterwards (leave blank to end there)." },

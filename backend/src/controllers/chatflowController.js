@@ -3,8 +3,9 @@ const Automation = require('../models/Automation');
 const { sanitizeFlow, LANG_RE } = require('../services/flowValidator');
 const templates = require('../services/flowTemplates');
 const { parseFlowWorkbook, flowToWorkbookBuffer, buildTemplateWorkbookBuffer } = require('../utils/flowExcel');
-const { bad, notFound, escRe } = require('../utils/http');
+const { bad, notFound, escRe, HttpError } = require('../utils/http');
 const { featuresOf } = require('../middleware/features');
+const dispatcher = require('../services/dispatcher');
 
 const one = async (req) => {
   const f = await Chatflow.findOne({ _id: req.params.id, admin: req.admin._id });
@@ -74,7 +75,8 @@ exports.create = async (req, res) => {
   if (!name) throw bad('Name is required');
   const languages = cleanLanguages(b.languages && b.languages.length ? b.languages : ['english']);
   const doc = new Chatflow({ admin: req.admin._id, name: name.slice(0, 80), description: String(b.description || '').slice(0, 300), languages });
-  const tpl = b.template === 'sample' ? templates.sample : b.template === 'empty' ? null : templates.blank;
+  if (b.template === 'shop' && !featuresOf(req.admin).ecommerce) throw new HttpError(403, 'The shop flow needs Ecommerce operations, which the Super Admin has not enabled for your account.');
+  const tpl = b.template === 'sample' ? templates.sample : b.template === 'shop' ? templates.shop : b.template === 'empty' ? null : templates.blank;
   if (b.flow) await applyFlow(doc, b.flow, req.admin);
   else if (tpl) await applyFlow(doc, Object.assign({}, ...languages.map((l) => tpl(l))), req.admin);
   else { doc.validation = { valid: false, errors: ['The flow is empty'], warnings: [], checkedAt: new Date() }; await doc.save(); }
@@ -158,4 +160,18 @@ exports.importExcel = async (req, res) => {
   doc.languages = cleanLanguages(Object.keys(flow));
   const r = await applyFlow(doc, flow, req.admin);
   res.json(result(doc, r, { message: r.errors.length ? 'Imported as a draft - fix the listed problems' : 'Excel imported and saved' }));
+};
+
+// POST /api/chatflows/:id/simulate   { text | replyId | replyTitle | sampleLocation | media, reset }
+// Dry run of the LIVE (last valid) version of this flow with the admin's real products / branches - no automation needed.
+// Nothing is sent to WhatsApp; no orders, enquiries or submissions are created.
+exports.simulate = async (req, res) => {
+  const doc = await one(req);
+  if (!doc.liveFlow || !Object.keys(doc.liveFlow).length) throw bad('Save a valid flow first - the test runs the last saved valid version.');
+  const b = req.body || {};
+  const input = await dispatcher.buildSimInput(req.admin._id, b);
+  // the chat flow's own id doubles as the id of a throw-away preview automation, so the test chat keeps its state between messages
+  const preview = { _id: doc._id, name: doc.name, type: 'flow', chatflow: doc._id, active: true, isDefault: false, priority: 0, trigger: { keywords: [] }, restartKeywords: ['menu', 'restart', 'start over'], endKeywords: ['stop', 'end', 'exit'], sessionTimeoutMins: 1440, preview: true };
+  const out = await dispatcher.simulate({ cfg: req.cfg, automation: preview, userId: String(req.admin._id), input, reset: !!b.reset || (!b.text && !b.replyId && !b.media && !b.sampleLocation) });
+  res.json({ success: true, data: out });
 };
